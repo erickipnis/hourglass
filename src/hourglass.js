@@ -1,4 +1,3 @@
-import Promise from 'bluebird';
 import Redis from 'ioredis';
 import uuid from 'node-uuid';
 import eventEmitter from 'event-emitter';
@@ -34,7 +33,7 @@ export default function (redisURL = 'redis://localhost:6379') {
   * @param {number} timeInMS - the time in milliseconds for the timer
   * @param {object} data - the data to attach to a timer
   * @throws {NoOperationError} throws if a timer could not be started in redis
-  * @return {Promise<string>} the string 'ok' if timer successfuly starts
+  * @return {Promise<string>} the string 'ok' if the timer successfully starts
   */
   function startTimer(timerId, timeInMS, data) {
     const pipeline = redis.pipeline();
@@ -48,7 +47,7 @@ export default function (redisURL = 'redis://localhost:6379') {
     .then((results) => {
       map((result) => {
         if (!equals(toLower(result[1]), 'ok')) {
-          throw new NoOperationError(`Could not start the timer with id: ${timerId}.`);
+          throw new NoOperationError(`Redis could not start the timer with id: ${timerId}.`);
         }
       }, results);
 
@@ -57,10 +56,11 @@ export default function (redisURL = 'redis://localhost:6379') {
   }
 
   /**
-  * Deletes a timer from the timer and data hashes and the expring key in redis
+  * Redis side function.
+  * Deletes a timer from the ttl and data hashes and deletes the expring key in redis
   * @param {string} timerId - the id of the timer to delete
   * @throws {NoOperationError} throws if a timer trying to be deleted doesn't exist
-  * @return {Promise<object>} - returns an object containing the data of the timer
+  * @return {Promise<object>} - returns an object containing the data of the timer if deleted
   */
   function deleteTimer(timerId) {
     const pipeline = redis.pipeline();
@@ -75,7 +75,7 @@ export default function (redisURL = 'redis://localhost:6379') {
     .then((results) => {
       map((result) => {
         if (equals(result[1], 0)) {
-          throw new NoOperationError('The key trying to be deleted doesn\'t exist.');
+          throw new NoOperationError(`Redis could not delete timer with id: ${timerId}`);
         }
       }, results);
 
@@ -91,8 +91,38 @@ export default function (redisURL = 'redis://localhost:6379') {
 
   }
 
-  function suspendTimer() {
+  /**
+  * Redis side function. Suspends a timer.
+  * Rewrites the ttl hash field containing the previous timer ttl with the remaining ttl
+  * @param {string} timerId - the id of the timer to suspend
+  * @throws {NoOperationError} throws when redis fails or given timer doesn't exist
+  * @returns {Promise<string>} the string 'ok' if the timer is successfully suspended
+  */
+  function suspendTimer(timerId) {
+    const ttl = redis.pttl(timerId)
+    const suspendTimerId = timerId + suspendedSuffix;
+    const pipeline = redis.pipeline();
 
+    // Overwrite the initial ttl hash field with the remaining ttl
+    pipeline.hmset(hourglass.timerSetId, timerId, ttl);
+
+    // Rename the key in redis so it doesn't triggers a 'suspend' timer event instead of a 'delete'
+    pipeline.rename(timerId, suspendTimerId);
+    pipeline.del(suspendTimerId);
+
+    return pipeline.exec()
+    .then((results) => {
+      map((result) => {
+        if (!equals(toLower(result[1]), 'ok')) {
+          throw new NoOperationError(`Could not suspend the timer with id: ${timerId}`);
+        }
+        else if (equals(result[1], 0)) {
+          throw new NoOperationError(`No timer with id ${timerId}. Could not suspend the timer`);
+        }
+      }, results);
+
+      return 'ok';
+    });
   }
 
   function resumeTimer() {
@@ -189,9 +219,7 @@ export default function (redisURL = 'redis://localhost:6379') {
     .then(() => timerId);
   };
 
-  hourglass.suspendTimer = () => {
-
-  };
+  hourglass.suspendTimer = timerId => suspendTimer(timerId);
 
   hourglass.resumeTimer = () => {
 
