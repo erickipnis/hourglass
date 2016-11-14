@@ -75,7 +75,7 @@ export default function (redisURL = 'redis://localhost:6379') {
     .then((results) => {
       map((result) => {
         if (equals(result[1], 0)) {
-          throw new NoOperationError(`Redis could not delete timer with id: ${timerId}`);
+          throw new NoOperationError(`Redis could not delete the timer with id: ${timerId}`);
         }
       }, results);
 
@@ -104,9 +104,9 @@ export default function (redisURL = 'redis://localhost:6379') {
     const pipeline = redis.pipeline();
 
     // Overwrite the initial ttl hash field with the remaining ttl
-    pipeline.hmset(hourglass.timerSetId, timerId, ttl);
+    pipeline.hmset(hourglass.timerHashId, timerId, ttl);
 
-    // Rename the key in redis so it doesn't triggers a 'suspend' timer event instead of a 'delete'
+    // Rename the key in redis to trigger a custom 'suspended' timer event
     pipeline.rename(timerId, suspendTimerId);
     pipeline.del(suspendTimerId);
 
@@ -114,10 +114,10 @@ export default function (redisURL = 'redis://localhost:6379') {
     .then((results) => {
       map((result) => {
         if (!equals(toLower(result[1]), 'ok')) {
-          throw new NoOperationError(`Could not suspend the timer with id: ${timerId}`);
+          throw new NoOperationError(`Redis could not suspend the timer with id: ${timerId}`);
         }
         else if (equals(result[1], 0)) {
-          throw new NoOperationError(`No timer with id ${timerId}. Could not suspend the timer`);
+          throw new NoOperationError(`No timer with id: ${timerId}. Could not suspend the timer`);
         }
       }, results);
 
@@ -125,8 +125,35 @@ export default function (redisURL = 'redis://localhost:6379') {
     });
   }
 
-  function resumeTimer() {
+  /**
+  * @todo - don't resume a timer that isn't suspended
+  * Redis side function. Resumes a timer.
+  * Gets the remaining ttl of a suspended timer and creates a new timer.
+  * @param {string} timerId - the id of the timer to resume
+  * @throws {NoOperationError} throws when redis fails
+  * @returns {Promise<string>} the string 'ok' if the timer is successfully suspended
+  */
+  function resumeTimer(timerId) {
+    const pipeline = redis.pipeline();
+    const ttl = redis.hget(hourglass.timerHashId, timerId);
+    const resumedTimerId = timerId + resumedSuffix;
 
+    // Will trigger a redis pub/sub expire event for 'resumed' timer
+    pipeline.psetex(resumedTimerId, ttl);
+
+    // Rename the timer to remove the resumed suffix so proper event is fired on expiration
+    pipeline.rename(resumedTimerId, timerId);
+
+    return pipeline.exec()
+    .then((results) => {
+      map((result) => {
+        if (!equals(toLower(result[1]), 'ok')) {
+          throw new NoOperationError(`Redis could no resume timer with id ${timerId}`)
+        }
+      }, results);
+
+      return 'ok';
+    });
   }
 
   function getTimerData() {
@@ -221,9 +248,7 @@ export default function (redisURL = 'redis://localhost:6379') {
 
   hourglass.suspendTimer = timerId => suspendTimer(timerId);
 
-  hourglass.resumeTimer = () => {
-
-  };
+  hourglass.resumeTimer = timerId => resumeTimer(timerId);
 
   hourglass.deleteTimer = timerId => deleteTimer(timerId);
 
